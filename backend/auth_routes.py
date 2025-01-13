@@ -5,9 +5,11 @@ from app import app, db
 from models import User, Reader, Loan
 from werkzeug.security import check_password_hash, generate_password_hash
 
-@app.route('/api/auth/register', methods=['POST'])
-@cross_origin()
+@app.route('/api/auth/register', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 def register():
+    if request.method == 'OPTIONS':
+        return '', 200
     data = request.json
     
     try:
@@ -44,9 +46,11 @@ def register():
         current_app.logger.error(f"Error registering user: {str(e)}")
         return jsonify({'error': 'Failed to register user'}), 500
 
-@app.route('/api/auth/login', methods=['POST'])
-@cross_origin()
+@app.route('/api/auth/login', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 def login():
+    if request.method == 'OPTIONS':
+        return '', 200
     data = request.json
     
     # Simplified login query
@@ -62,9 +66,12 @@ def login():
     )
     return jsonify({'token': access_token, 'role': user.role}), 200
 
-@app.route('/api/users', methods=['GET'])
+@app.route('/api/users', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def get_users():
+    if request.method == 'OPTIONS':
+        return '', 200
     claims = get_jwt()
     if claims.get('role') != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
@@ -80,9 +87,12 @@ def get_users():
         current_app.logger.error(f"Error fetching users: {str(e)}")
         return jsonify({'error': 'Failed to fetch users'}), 500
 
-@app.route('/api/users/<int:user_id>/promote', methods=['POST'])
+@app.route('/api/users/<int:user_id>/promote', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def promote_user(user_id):
+    if request.method == 'OPTIONS':
+        return '', 200
     claims = get_jwt()
     current_user_role = claims.get('role', 'user')
     if current_user_role != 'admin':
@@ -98,9 +108,12 @@ def promote_user(user_id):
     
     return jsonify({'message': 'User role updated successfully'})
 
-@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@app.route('/api/users/<int:user_id>', methods=['DELETE', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def delete_user(user_id):
+    if request.method == 'OPTIONS':
+        return '', 200
     claims = get_jwt()
     if claims.get('role') != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
@@ -114,9 +127,12 @@ def delete_user(user_id):
     
     return jsonify({'message': 'User deleted successfully'})
 
-@app.route('/api/users/<int:user_id>/details', methods=['GET'])
+@app.route('/api/users/<int:user_id>/details', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def get_user_details(user_id):
+    if request.method == 'OPTIONS':
+        return '', 200
     claims = get_jwt()
     if claims.get('role') != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403

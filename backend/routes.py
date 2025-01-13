@@ -2,7 +2,7 @@ from flask import request, jsonify, send_file, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from app import app, db
 from models import Book, Author, Publisher, Reader, Loan, Reservation, User, ReaderRegistrationRequest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from flask_cors import cross_origin
 import subprocess
 import os
@@ -14,43 +14,52 @@ from werkzeug.security import check_password_hash
 from flask_jwt_extended import create_access_token
 from werkzeug.security import generate_password_hash
 import json
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 
-@app.route('/books', methods=['GET'])
+@app.route('/api/books', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+@jwt_required(optional=True)
 def get_books():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         title = request.args.get('title', '').lower()
         author = request.args.get('author', '').lower()
         isbn = request.args.get('isbn', '')
+        status = request.args.get('status', '')
         genre = request.args.get('genre', '')
         page = request.args.get('page', 1, type=int)
         per_page = 9
         offset = (page - 1) * per_page
 
         query = """
-                SELECT 
-                    b.id, b.title, b.isbn, b.publication_year, 
-                    b.genre, b.status, b.description,
-                    CONCAT(a.first_name, ' ', a.last_name) as author_name,
-                    p.name as publisher_name,
+            SELECT 
+                b.id, b.title, b.isbn, b.publication_year, 
+                b.genre, b.status, b.description,
+                CONCAT(a.first_name, ' ', a.last_name) as author,
+                p.name as publisher,
                 COUNT(*) OVER() as total_count
-                FROM books b
-                LEFT JOIN authors a ON b.author_id = a.id
-                LEFT JOIN publishers p ON b.publisher_id = p.id
+            FROM books b
+            JOIN authors a ON b.author_id = a.id
+            LEFT JOIN publishers p ON b.publisher_id = p.id
             WHERE (:title = '' OR LOWER(b.title) LIKE :title_pattern)
             AND (:author = '' OR LOWER(CONCAT(a.first_name, ' ', a.last_name)) LIKE :author_pattern)
             AND (:isbn = '' OR b.isbn LIKE :isbn_pattern)
+            AND (:status = '' OR b.status = :status)
             AND (:genre = '' OR b.genre = :genre)
             ORDER BY b.title
             LIMIT :limit OFFSET :offset
         """
-
-        # Get genres in a separate query
-        genres_query = "SELECT DISTINCT genre FROM books WHERE genre IS NOT NULL"
         
         result = db.session.execute(query, {
             'title': title,
             'author': author,
             'isbn': isbn,
+            'status': status,
             'genre': genre,
             'title_pattern': f'%{title}%',
             'author_pattern': f'%{author}%',
@@ -61,28 +70,28 @@ def get_books():
 
         books = []
         total_count = 0
+        genres = set()
         
-        # Process results and get total count from first row
         for row in result:
             books.append({
                 'id': row.id,
                 'title': row.title,
                 'isbn': row.isbn,
-                'year': row.publication_year,
+                'publication_year': row.publication_year,
                 'genre': row.genre,
                 'status': row.status,
                 'description': row.description,
-                'author': row.author_name,
-                'publisher': row.publisher_name
+                'author': row.author,
+                'publisher': row.publisher
             })
+            if row.genre:
+                genres.add(row.genre)
             if not total_count and hasattr(row, 'total_count'):
                 total_count = row.total_count
 
-        genres = [row[0] for row in db.session.execute(genres_query)]
-
         return jsonify({
             'books': books,
-            'genres': genres,
+            'genres': sorted(list(genres)),
             'total': total_count,
             'pages': (total_count + per_page - 1) // per_page if total_count > 0 else 0
         })
@@ -453,7 +462,6 @@ def check_reader_status():
 @app.route('/api/reservations/book/<int:book_id>', methods=['GET'])
 def get_book_reservations(book_id):
     try:
-        # Replace ORM query with SQL:
         query = """
             SELECT 
                 id,
@@ -466,15 +474,18 @@ def get_book_reservations(book_id):
             ORDER BY start_date
         """
         
-        result = db.session.execute(query, {'book_id': book_id})
-        
-        reservations = [{
-            'start_date': row.start_date.isoformat(),
-            'end_date': row.end_date.isoformat(),
-            'status': row.status
-        } for row in result]
-        
-        return jsonify(reservations)
+        with db.session.begin():
+            result = db.session.execute(query, {'book_id': book_id})
+            rows = result.fetchall()
+            
+            reservations = [{
+                'start_date': row.start_date.isoformat(),
+                'end_date': row.end_date.isoformat(),
+                'status': row.status
+            } for row in rows]
+            
+            return jsonify(reservations)
+            
     except Exception as e:
         current_app.logger.error(f"Error fetching reservations: {str(e)}")
         return jsonify({'error': 'Failed to fetch reservations'}), 500
@@ -892,7 +903,7 @@ def reject_reader_request(request_id):
         return jsonify({'error': 'Failed to reject request'}), 500
 
 @app.route('/api/reservations', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(supports_credentials=True)
 @jwt_required(optional=True)
 def create_reservation():
     if request.method == 'OPTIONS':
@@ -1007,24 +1018,28 @@ def get_user_reservations():
             ORDER BY res.start_date DESC
         """
         
-        result = db.session.execute(query, {'user_id': current_user_id})
-        first_row = result.first()
-        
-        if not first_row or not first_row.reader_id:
-            return jsonify({'error': 'User is not a registered reader'}), 403
+        with db.session.begin():
+            result = db.session.execute(query, {'user_id': current_user_id})
+            rows = result.fetchall()
             
-        reservations = [{
-            'id': row.id,
-            'book_title': row.book_title,
-            'author': row.author_name,
-            'start_date': row.start_date.isoformat(),
-            'end_date': row.end_date.isoformat(),
-            'status': row.status,
-            'book_status': row.book_status
-        } for row in result]
-        
-        return jsonify(reservations)
-        
+            if not rows:
+                return jsonify([])
+                
+            if not rows[0].reader_id:
+                return jsonify({'error': 'User is not a registered reader'}), 403
+                
+            reservations = [{
+                'id': row.id,
+                'book_title': row.book_title,
+                'author': row.author_name,
+                'start_date': row.start_date.isoformat(),
+                'end_date': row.end_date.isoformat(),
+                'status': row.status,
+                'book_status': row.book_status
+            } for row in rows]
+            
+            return jsonify(reservations)
+            
     except Exception as e:
         current_app.logger.error(f"Error fetching user reservations: {str(e)}")
         return jsonify({'error': 'Failed to fetch reservations'}), 500
@@ -1071,7 +1086,7 @@ def get_books_for_loans():
         return jsonify({'error': 'Failed to fetch books'}), 500
 
 @app.route('/api/loans/readers', methods=['GET', 'OPTIONS'])
-@cross_origin()
+@cross_origin(supports_credentials=True)
 @jwt_required(optional=True)
 def get_readers_for_loan():
     if request.method == 'OPTIONS':
@@ -1275,15 +1290,13 @@ def return_book(loan_id):
         current_app.logger.error(f"Error returning book: {str(e)}")
         return jsonify({'error': 'Failed to return book'}), 500
 
-@app.route('/api/reservations/all', methods=['GET'])
+@app.route('/api/reservations/all', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def get_all_reservations():
-    claims = get_jwt()
-    current_app.logger.info(f"User accessing reservations endpoint. Role: {claims.get('role')}, ID: {get_jwt_identity()}")
-    if claims.get('role') not in ['admin', 'worker']:
-        current_app.logger.error(f"Unauthorized access attempt to reservations. User role: {claims.get('role')}")
-        return jsonify({'error': 'Unauthorized'}), 403
-
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         page = request.args.get('page', 1, type=int)
         per_page = 10
@@ -1330,12 +1343,12 @@ def get_all_reservations():
         current_app.logger.error(f"Error fetching reservations: {str(e)}")
         return jsonify({'error': 'Failed to fetch reservations'}), 500
 
-@app.route('/api/reservations/admin/create', methods=['POST'])
+@app.route('/api/reservations/admin/create', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def admin_create_reservation():
-    claims = get_jwt()
-    if claims.get('role') not in ['admin', 'worker']:
-        return jsonify({'error': 'Unauthorized'}), 403
+    if request.method == 'OPTIONS':
+        return '', 200
         
     try:
         data = request.get_json()
@@ -1433,9 +1446,13 @@ def delete_reservation(reservation_id):
         current_app.logger.error(f"Error cancelling reservation: {str(e)}")
         return jsonify({'error': 'Failed to cancel reservation'}), 500
 
-@app.route('/books/<int:book_id>', methods=['PUT'])
+@app.route('/api/books/<int:book_id>', methods=['PUT', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def update_book(book_id):
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     claims = get_jwt()
     if claims.get('role') not in ['admin', 'worker']:
         return jsonify({'error': 'Unauthorized'}), 403
@@ -1471,7 +1488,8 @@ def update_book(book_id):
                     author_id = :author_id,
                     isbn = :isbn,
                     publication_year = :publication_year,
-                    genre = :genre
+                    genre = :genre,
+                    description = :description
                 WHERE id = :book_id
                 RETURNING id
             """
@@ -1481,6 +1499,7 @@ def update_book(book_id):
                 'isbn': data['isbn'],
                 'publication_year': data['publication_year'],
                 'genre': data['genre'],
+                'description': data.get('description', ''),
                 'book_id': book_id
             }).scalar()
 
@@ -1493,9 +1512,13 @@ def update_book(book_id):
         current_app.logger.error(f"Error updating book: {str(e)}")
         return jsonify({'error': 'Failed to update book'}), 500
 
-@app.route('/api/users/my-loans', methods=['GET'])
+@app.route('/api/users/my-loans', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def get_my_loans():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         user_id = get_jwt_identity()
         
@@ -1530,9 +1553,13 @@ def get_my_loans():
         current_app.logger.error(f"Error fetching user loans: {str(e)}")
         return jsonify({'error': 'Failed to fetch loans'}), 500
 
-@app.route('/api/users/my-reservations', methods=['GET'])
+@app.route('/api/users/my-reservations', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 @jwt_required()
 def get_my_reservations():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         user_id = get_jwt_identity()
         
@@ -1563,8 +1590,12 @@ def get_my_reservations():
         current_app.logger.error(f"Error fetching user reservations: {str(e)}")
         return jsonify({'error': 'Failed to fetch reservations'}), 500
 
-@app.route('/api/health')
+@app.route('/api/health', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 def health_check():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
     try:
         # Test database connection
         db.session.execute('SELECT 1')
@@ -1580,7 +1611,7 @@ def health_check():
         }), 500
 
 @app.route('/api/books/available', methods=['GET', 'OPTIONS'])
-@cross_origin()
+@cross_origin(supports_credentials=True)
 @jwt_required(optional=True)
 def get_available_books_for_reservation():
     if request.method == 'OPTIONS':
@@ -1597,7 +1628,7 @@ def get_available_books_for_reservation():
             SELECT 
                 b.id, b.title, b.isbn, b.publication_year, 
                 b.genre, b.status, b.description,
-                CONCAT(a.first_name, ' ', a.last_name) as author,
+                CONCAT(a.first_name, ' ', a.last_name) as author_name,
                 p.name as publisher,
                 COUNT(*) OVER() as total_count
             FROM books b
@@ -1626,6 +1657,7 @@ def get_available_books_for_reservation():
 
         books = []
         total_count = 0
+        genres = set()
         
         for row in result:
             books.append({
@@ -1636,19 +1668,275 @@ def get_available_books_for_reservation():
                 'genre': row.genre,
                 'status': row.status,
                 'description': row.description,
-                'author': row.author,
+                'author': row.author_name,
                 'publisher': row.publisher
             })
+            if row.genre:
+                genres.add(row.genre)
             if not total_count and hasattr(row, 'total_count'):
                 total_count = row.total_count
 
         return jsonify({
             'books': books,
+            'genres': sorted(list(genres)),
             'total': total_count,
-            'pages': (total_count + per_page - 1) // per_page if total_count > 0 else 0,
-            'current_page': page
+            'pages': (total_count + per_page - 1) // per_page if total_count > 0 else 0
         })
 
     except Exception as e:
         current_app.logger.error(f"Error fetching available books: {str(e)}")
         return jsonify({'error': 'Failed to fetch books'}), 500
+
+@app.route('/api/loans/active', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+@jwt_required(optional=True)
+def get_active_loans():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        user_id = get_jwt_identity()
+        
+        query = """
+            SELECT 
+                l.id, b.title, CONCAT(a.first_name, ' ', a.last_name) as author,
+                l.loan_date, l.return_date, l.status, res.end_date as due_date,
+                (l.status = 'borrowed' AND res.end_date < CURRENT_DATE) as is_overdue
+            FROM loans l
+            JOIN books b ON l.book_id = b.id
+            JOIN authors a ON b.author_id = a.id
+            JOIN readers r ON l.reader_id = r.id
+            LEFT JOIN reservations res ON l.book_id = res.book_id 
+                AND l.reader_id = res.reader_id
+                AND res.status = 'completed'
+            WHERE r.user_id = :user_id
+            AND l.status = 'borrowed'
+            ORDER BY l.loan_date DESC
+        """
+        
+        result = db.session.execute(query, {'user_id': user_id})
+        loans = [dict(row) for row in result]
+        
+        # Convert datetime objects to ISO format strings
+        for loan in loans:
+            loan['loan_date'] = loan['loan_date'].isoformat()
+            loan['return_date'] = loan['return_date'].isoformat() if loan['return_date'] else None
+            loan['due_date'] = loan['due_date'].isoformat() if loan['due_date'] else None
+        
+        return jsonify(loans)
+
+    except Exception as e:
+        current_app.logger.error(f"Error fetching active loans: {str(e)}")
+        return jsonify({'error': 'Failed to fetch active loans'}), 500
+
+@app.route('/api/loans/history', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+@jwt_required(optional=True)
+def get_loan_history():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        user_id = get_jwt_identity()
+        
+        query = """
+            SELECT 
+                l.id, b.title, CONCAT(a.first_name, ' ', a.last_name) as author,
+                l.loan_date, l.return_date, l.status, res.end_date as due_date,
+                (l.status = 'borrowed' AND res.end_date < CURRENT_DATE) as is_overdue
+            FROM loans l
+            JOIN books b ON l.book_id = b.id
+            JOIN authors a ON b.author_id = a.id
+            JOIN readers r ON l.reader_id = r.id
+            LEFT JOIN reservations res ON l.book_id = res.book_id 
+                AND l.reader_id = res.reader_id
+                AND res.status = 'completed'
+            WHERE r.user_id = :user_id
+            AND l.status = 'returned'
+            ORDER BY l.return_date DESC
+        """
+        
+        result = db.session.execute(query, {'user_id': user_id})
+        loans = [dict(row) for row in result]
+        
+        # Convert datetime objects to ISO format strings
+        for loan in loans:
+            loan['loan_date'] = loan['loan_date'].isoformat()
+            loan['return_date'] = loan['return_date'].isoformat() if loan['return_date'] else None
+            loan['due_date'] = loan['due_date'].isoformat() if loan['due_date'] else None
+        
+        return jsonify(loans)
+
+    except Exception as e:
+        current_app.logger.error(f"Error fetching loan history: {str(e)}")
+        return jsonify({'error': 'Failed to fetch loan history'}), 500
+
+@app.route('/api/reports/generate', methods=['GET', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+@jwt_required()
+def generate_report():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200
+        
+    try:
+        report_type = request.args.get('type')
+        report_period = request.args.get('period')
+        
+        if not report_type or not report_period:
+            return jsonify({'error': 'Missing report type or period'}), 400
+            
+        # Get the date range based on the period
+        today = datetime.now().date()
+        if report_period == 'today':
+            start_date = today
+            end_date = today
+        elif report_period == 'week':
+            start_date = today - timedelta(days=today.weekday())
+            end_date = today
+        elif report_period == 'month':
+            start_date = today.replace(day=1)
+            end_date = today
+        elif report_period == 'year':
+            start_date = today.replace(month=1, day=1)
+            end_date = today
+        else:
+            return jsonify({'error': 'Invalid period'}), 400
+            
+        # Build the query based on report type
+        if report_type == 'loans':
+            query = """
+                SELECT 
+                    b.title,
+                    CONCAT(a.first_name, ' ', a.last_name) as author,
+                    CONCAT(r.first_name, ' ', r.last_name) as reader,
+                    l.loan_date,
+                    l.return_date,
+                    l.status
+                FROM loans l
+                JOIN books b ON l.book_id = b.id
+                JOIN authors a ON b.author_id = a.id
+                JOIN readers r ON l.reader_id = r.id
+                WHERE DATE(l.loan_date) BETWEEN :start_date AND :end_date
+                ORDER BY l.loan_date DESC
+            """
+        elif report_type == 'reservations':
+            query = """
+                SELECT 
+                    b.title,
+                    CONCAT(a.first_name, ' ', a.last_name) as author,
+                    CONCAT(r.first_name, ' ', r.last_name) as reader,
+                    res.created_at,
+                    res.start_date,
+                    res.end_date,
+                    res.status
+                FROM reservations res
+                JOIN books b ON res.book_id = b.id
+                JOIN authors a ON b.author_id = a.id
+                JOIN readers r ON res.reader_id = r.id
+                WHERE DATE(res.created_at) BETWEEN :start_date AND :end_date
+                ORDER BY res.created_at DESC
+            """
+        elif report_type == 'readers':
+            query = """
+                SELECT 
+                    CONCAT(r.first_name, ' ', r.last_name) as reader,
+                    r.email,
+                    r.phone_number,
+                    r.address,
+                    r.registration_date,
+                    COUNT(DISTINCT l.id) as total_loans,
+                    COUNT(DISTINCT res.id) as total_reservations
+                FROM readers r
+                LEFT JOIN loans l ON r.id = l.reader_id
+                LEFT JOIN reservations res ON r.id = res.reader_id
+                WHERE DATE(r.registration_date) BETWEEN :start_date AND :end_date
+                GROUP BY r.id, r.first_name, r.last_name, r.email, r.phone_number, r.address, r.registration_date
+                ORDER BY r.registration_date DESC
+            """
+        elif report_type == 'overdue':
+            query = """
+                SELECT 
+                    b.title,
+                    CONCAT(a.first_name, ' ', a.last_name) as author,
+                    CONCAT(r.first_name, ' ', r.last_name) as reader,
+                    r.email,
+                    r.phone_number,
+                    l.loan_date,
+                    res.end_date as due_date,
+                    CURRENT_DATE - res.end_date as days_overdue
+                FROM loans l
+                JOIN books b ON l.book_id = b.id
+                JOIN authors a ON b.author_id = a.id
+                JOIN readers r ON l.reader_id = r.id
+                JOIN reservations res ON l.book_id = res.book_id 
+                    AND l.reader_id = res.reader_id
+                    AND res.status = 'completed'
+                WHERE l.status = 'borrowed'
+                AND res.end_date < CURRENT_DATE
+                AND DATE(l.loan_date) BETWEEN :start_date AND :end_date
+                ORDER BY days_overdue DESC
+            """
+        else:
+            return jsonify({'error': 'Invalid report type'}), 400
+            
+        result = db.session.execute(query, {'start_date': start_date, 'end_date': end_date})
+        data = [dict(row) for row in result]
+        
+        # Convert datetime objects to string format
+        for row in data:
+            for key, value in row.items():
+                if isinstance(value, datetime):
+                    row[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(value, date):
+                    row[key] = value.strftime('%Y-%m-%d')
+                elif isinstance(value, timedelta):
+                    row[key] = value.days
+                    
+        # Create PDF using reportlab
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        
+        # Add title
+        title = f"Raport {report_type} ({start_date} - {end_date})"
+        elements.append(Paragraph(title, getSampleStyleSheet()['Title']))
+        elements.append(Spacer(1, 12))
+        
+        # Create table
+        if data:
+            table_data = [[Paragraph(str(key), getSampleStyleSheet()['Heading2']) for key in data[0].keys()]]
+            for row in data:
+                table_data.append([Paragraph(str(value), getSampleStyleSheet()['Normal']) for value in row.values()])
+            
+            table = Table(table_data)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 14),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 12),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            elements.append(table)
+        else:
+            elements.append(Paragraph("Brak danych dla wybranego okresu", getSampleStyleSheet()['Normal']))
+            
+        doc.build(elements)
+        buffer.seek(0)
+        
+        return send_file(
+            buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'report_{report_type}_{start_date}_{end_date}.pdf'
+        )
+        
+    except Exception as e:
+        current_app.logger.error(f"Error generating report: {str(e)}")
+        return jsonify({'error': 'Failed to generate report'}), 500

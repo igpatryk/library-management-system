@@ -3,28 +3,77 @@ import api from '../utils/axios';
 
 const MyBooks = () => {
   const [loans, setLoans] = useState([]);
-  const [reservations, setReservations] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingReservations, setLoadingReservations] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const [error, setError] = useState('');
+  const [reservationError, setReservationError] = useState('');
+  const [historyError, setHistoryError] = useState('');
+  const [loanHistory, setLoanHistory] = useState([]);
   const [activeTab, setActiveTab] = useState('loans');
+  const [success, setSuccess] = useState('');
+  const [reservations, setReservations] = useState([]);
+
+  const fetchLoans = async () => {
+    try {
+      const response = await api.get('/api/loans/active');
+      setLoans(response.data);
+      setError('');
+    } catch (err) {
+      setError('Nie udało się pobrać wypożyczeń');
+    }
+  };
+
+  const fetchReservations = async () => {
+    setLoadingReservations(true);
+    try {
+      const response = await api.get('/api/reservations/user');
+      setReservations(response.data);
+      setReservationError('');
+    } catch (err) {
+      setReservationError('Nie udało się pobrać rezerwacji');
+      console.error('Error fetching reservations:', err);
+    } finally {
+      setLoadingReservations(false);
+    }
+  };
+
+  const fetchLoanHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const response = await api.get('/api/loans/history');
+      setLoanHistory(response.data);
+      setHistoryError('');
+    } catch (err) {
+      setHistoryError('Nie udało się pobrać historii wypożyczeń');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const handleCancelReservation = async (reservationId) => {
+    try {
+      await api.delete(`/api/reservations/${reservationId}`);
+      setSuccess('Rezerwacja została anulowana');
+      await fetchReservations();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setReservationError('Nie udało się anulować rezerwacji');
+      console.error('Error canceling reservation:', err);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
-      try {
-        setLoading(true);
-        const [loansRes, reservationsRes] = await Promise.all([
-          api.get('/api/users/my-loans'),
-          api.get('/api/users/my-reservations')
-        ]);
-        setLoans(loansRes.data);
-        setReservations(reservationsRes.data);
-      } catch (err) {
-        setError('Nie udało się pobrać danych');
-      } finally {
-        setLoading(false);
-      }
+      setLoading(true);
+      await Promise.all([
+        fetchLoans(),
+        fetchReservations(),
+        fetchLoanHistory()
+      ]);
+      setLoading(false);
     };
-
+    
     fetchData();
   }, []);
 
@@ -72,16 +121,15 @@ const MyBooks = () => {
           <div className="space-y-4">
             {reservations.map(reservation => (
               <div key={reservation.id} className="border rounded-lg p-4 shadow-sm">
-                <h3 className="font-semibold">{reservation.title}</h3>
+                <h3 className="text-lg font-semibold">{reservation.book_title}</h3>
                 <p className="text-gray-600">Autor: {reservation.author}</p>
-                <p className="text-sm text-gray-500">Od: {new Date(reservation.start_date).toLocaleDateString()}</p>
-                <p className="text-sm text-gray-500">Do: {new Date(reservation.end_date).toLocaleDateString()}</p>
-                <button
-                  onClick={() => handleCancelReservation(reservation.id)}
-                  className="mt-2 px-4 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-                >
-                  Anuluj rezerwację
-                </button>
+                <p className="text-sm text-gray-500">Data rozpoczęcia: {new Date(reservation.start_date).toLocaleDateString()}</p>
+                <p className="text-sm text-gray-500">Data zakończenia: {new Date(reservation.end_date).toLocaleDateString()}</p>
+                <p className="text-sm text-gray-500">Status: {
+                  reservation.status === 'pending' ? 'Oczekująca' :
+                  reservation.status === 'approved' ? 'Zatwierdzona' :
+                  reservation.status === 'rejected' ? 'Odrzucona' : 'Anulowana'
+                }</p>
               </div>
             ))}
           </div>
@@ -94,11 +142,11 @@ const MyBooks = () => {
           <div>Ładowanie...</div>
         ) : historyError ? (
           <div className="text-red-600">{historyError}</div>
-        ) : history.length === 0 ? (
+        ) : loanHistory.length === 0 ? (
           <div className="text-gray-500">Brak historii wypożyczeń</div>
         ) : (
           <div className="space-y-4">
-            {history.map(item => (
+            {loanHistory.map(item => (
               <div key={item.id} className="border rounded-lg p-4 shadow-sm">
                 <h3 className="font-semibold">{item.title}</h3>
                 <p className="text-gray-600">Autor: {item.author}</p>

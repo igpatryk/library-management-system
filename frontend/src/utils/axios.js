@@ -1,27 +1,21 @@
 import axios from 'axios';
 
-const instance = axios.create({
-  baseURL: 'http://localhost:5000',
+const api = axios.create({
+  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:5000',
   headers: {
-    'Content-Type': 'application/json'
-  }
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  },
+  withCredentials: true
 });
 
-// Add a request interceptor
-instance.interceptors.request.use(
+// Request interceptor
+api.interceptors.request.use(
   (config) => {
-    // Get the token from localStorage
     const token = localStorage.getItem('token');
-    
-    // If token exists, add it to the headers
     if (token) {
-      // Make sure to trim any whitespace and verify it's a non-empty string
-      const cleanToken = token.trim();
-      if (cleanToken) {
-        config.headers.Authorization = `Bearer ${cleanToken}`;
-      }
+      config.headers.Authorization = `Bearer ${token}`;
     }
-    
     return config;
   },
   (error) => {
@@ -30,32 +24,19 @@ instance.interceptors.request.use(
   }
 );
 
-// Add response interceptor
-instance.interceptors.response.use(
+// Response interceptor
+api.interceptors.response.use(
   (response) => {
-    // Log book-related responses
-    if (response.config.url.includes('/books')) {
-      console.log('Odpowiedź książki:', {
-        url: response.config.url,
-        status: response.status,
-        data: response.data
-      });
-    }
     return response;
   },
   (error) => {
     console.error('Błąd odpowiedzi:', {
       status: error.response?.status,
       data: error.response?.data,
-      headers: error.response?.headers,
-      config: {
-        url: error.config?.url,
-        method: error.config?.method,
-        headers: error.config?.headers
-      }
+      message: error.message
     });
     return Promise.reject(error);
   }
 );
 
-export default instance;
+export default api;

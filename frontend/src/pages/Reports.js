@@ -6,80 +6,47 @@ import api from '../utils/axios';
 const Reports = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [generatingReport, setGeneratingReport] = useState(false);
+  const [reportType, setReportType] = useState('');
+  const [reportPeriod, setReportPeriod] = useState('');
 
-  const reports = [
-    {
-      id: 'active-loans',
-      name: 'Aktywne Wypożyczenia',
-      description: 'Lista wszystkich aktualnie wypożyczonych książek i ich czytelników',
-      endpoint: '/api/reports/active-loans'
-    },
-    {
-      id: 'overdue-loans',
-      name: 'Przetrzymane Książki',
-      description: 'Lista wszystkich przetrzymanych książek',
-      endpoint: '/api/reports/overdue-loans'
-    },
-    {
-      id: 'reader-activity',
-      name: 'Aktywność Czytelników',
-      description: 'Podsumowanie aktywności czytelników, w tym wypożyczenia i rezerwacje',
-      endpoint: '/api/reports/reader-activity'
-    },
-    {
-      id: 'popular-books',
-      name: 'Popularne Książki',
-      description: 'Najczęściej wypożyczane i rezerwowane książki',
-      endpoint: '/api/reports/popular-books'
-    },
-    {
-      id: 'user-statistics',
-      name: 'Statystyki Użytkowników',
-      description: 'Statystyki dotyczące użytkowników, czytelników i ich ról',
-      endpoint: '/api/reports/user-statistics'
-    }
-  ];
-
-  const handleGenerateReport = async (endpoint) => {
+  const handleGenerateReport = async () => {
     try {
-      setLoading(true);
+      setGeneratingReport(true);
       setError('');
       
-      const response = await api.get(endpoint, {
+      const response = await api.get('/api/reports/generate', {
+        params: {
+          type: reportType,
+          period: reportPeriod
+        },
         responseType: 'blob'
       });
       
-      // Create download link
-      const url = window.URL.createObjectURL(new Blob([response.data]));
+      // Create a blob from the response data
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      
+      // Create a link and trigger download
       const link = document.createElement('a');
       link.href = url;
-      
-      // Get filename and type from response headers
-      const contentDisposition = response.headers['content-disposition'];
-      const contentType = response.headers['content-type'];
-      
-      // Default to CSV if no content type is specified
-      let extension = contentType?.includes('json') ? 'json' : 'csv';
-      let filename = `raport.${extension}`;
-      
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
-        if (filenameMatch) {
-          filename = filenameMatch[1];
-        }
-      }
-      
-      link.setAttribute('download', filename);
+      link.setAttribute('download', `report-${reportType}-${reportPeriod}.pdf`);
       document.body.appendChild(link);
       link.click();
       link.remove();
+      
+      // Clean up the URL
       window.URL.revokeObjectURL(url);
+      
+      setSuccess('Raport został wygenerowany pomyślnie');
+      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError('Nie udało się wygenerować raportu');
+      console.error('Error generating report:', err);
     } finally {
-      setLoading(false);
+      setGeneratingReport(false);
     }
   };
 
@@ -98,76 +65,11 @@ const Reports = () => {
         </div>
       )}
       
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {/* Loan Statistics */}
-        <div className="border rounded-lg p-6 shadow-sm">
-          <h2 className="text-xl font-semibold mb-4">Statystyki Wypożyczeń</h2>
-          {loading ? (
-            <div>Ładowanie...</div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <p className="text-gray-600">Aktywne wypożyczenia:</p>
-                <p className="text-2xl font-bold">{stats.active_loans}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Przetrzymane książki:</p>
-                <p className="text-2xl font-bold text-red-600">{stats.overdue_loans}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Wypożyczenia w tym miesiącu:</p>
-                <p className="text-2xl font-bold">{stats.loans_this_month}</p>
-              </div>
-            </div>
-          )}
+      {success && (
+        <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4">
+          {success}
         </div>
-
-        {/* Reservation Statistics */}
-        <div className="border rounded-lg p-6 shadow-sm">
-          <h2 className="text-xl font-semibold mb-4">Statystyki Rezerwacji</h2>
-          {loading ? (
-            <div>Ładowanie...</div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <p className="text-gray-600">Oczekujące rezerwacje:</p>
-                <p className="text-2xl font-bold">{stats.pending_reservations}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Zatwierdzone rezerwacje:</p>
-                <p className="text-2xl font-bold">{stats.approved_reservations}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Rezerwacje w tym miesiącu:</p>
-                <p className="text-2xl font-bold">{stats.reservations_this_month}</p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Reader Statistics */}
-        <div className="border rounded-lg p-6 shadow-sm">
-          <h2 className="text-xl font-semibold mb-4">Statystyki Czytelników</h2>
-          {loading ? (
-            <div>Ładowanie...</div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <p className="text-gray-600">Aktywni czytelnicy:</p>
-                <p className="text-2xl font-bold">{stats.active_readers}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Nowi czytelnicy w tym miesiącu:</p>
-                <p className="text-2xl font-bold">{stats.new_readers_this_month}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Oczekujące wnioski:</p>
-                <p className="text-2xl font-bold">{stats.pending_reader_requests}</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       <div className="mt-8">
         <h2 className="text-xl font-semibold mb-4">Generuj Raport</h2>
@@ -198,14 +100,14 @@ const Reports = () => {
 
           <button
             onClick={handleGenerateReport}
-            disabled={!reportType || !reportPeriod}
+            disabled={!reportType || !reportPeriod || generatingReport}
             className={`px-4 py-2 rounded ${
-              !reportType || !reportPeriod
+              !reportType || !reportPeriod || generatingReport
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 : 'bg-blue-500 text-white hover:bg-blue-600'
             }`}
           >
-            Generuj Raport
+            {generatingReport ? 'Generowanie...' : 'Generuj Raport'}
           </button>
         </div>
       </div>

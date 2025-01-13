@@ -17,23 +17,34 @@ const BookList = () => {
   const { user } = useAuth();
   const [selectedBook, setSelectedBook] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState('');
 
   const fetchBooks = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await api.get('/books', {
-        params: { 
-          ...filters,
+      const response = await api.get('/api/books', {
+        params: {
+          title: filters.title,
+          author: filters.author,
+          isbn: filters.isbn,
+          status: selectedStatus,
+          genre: filters.genre,
           page: currentPage
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
         }
       });
       setBookData(response.data);
+      setError('');
     } catch (err) {
       setError('Nie udało się pobrać książek');
+      setBookData({ books: [], total: 0, pages: 1, genres: [] });
     } finally {
       setLoading(false);
     }
-  }, [filters, currentPage]);
+  }, [filters.title, filters.author, filters.isbn, selectedStatus, filters.genre, currentPage]);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -71,6 +82,14 @@ const BookList = () => {
     setSelectedBook(book);
   };
 
+  const handleCloseModal = () => {
+    setSelectedBook(null);
+  };
+
+  const handleUpdateBook = () => {
+    fetchBooks();
+  };
+
   return (
     <div className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-6">Katalog Książek</h1>
@@ -102,11 +121,11 @@ const BookList = () => {
 
         <div className="flex gap-4">
           <select
-            value={filters.availability}
-            onChange={(e) => setFilters(prev => ({ ...prev, availability: e.target.value }))}
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value)}
             className="p-2 border rounded"
           >
-            <option value="">Wszystkie książki</option>
+            <option value="">Wszystkie statusy</option>
             <option value="available">Dostępne</option>
             <option value="borrowed">Wypożyczone</option>
           </select>
@@ -177,6 +196,14 @@ const BookList = () => {
           Następna
         </button>
       </div>
+
+      {selectedBook && (
+        <EditBookModal
+          book={selectedBook}
+          onClose={handleCloseModal}
+          onUpdate={handleUpdateBook}
+        />
+      )}
     </div>
   );
 };
