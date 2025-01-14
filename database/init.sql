@@ -220,7 +220,6 @@ AFTER INSERT OR UPDATE OR DELETE ON books
 FOR EACH STATEMENT
 EXECUTE FUNCTION refresh_book_genres();
 
--- Create check_book_availability function
 CREATE OR REPLACE FUNCTION check_book_availability(
     p_book_id INTEGER,
     p_start_date DATE,
@@ -258,7 +257,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 1. Publishers (single insert, no duplicates)
 INSERT INTO publishers (name) VALUES 
 ('Penguin Random House'),
 ('HarperCollins'),
@@ -346,7 +344,6 @@ INSERT INTO publishers (name) VALUES
 ('Dutton Books')
 ON CONFLICT (name) DO NOTHING;
 
--- 2. Authors (single insert, no duplicates)
 INSERT INTO authors (first_name, last_name) VALUES 
 ('Robert C.', 'Martin'),
 ('Haruki', 'Murakami'),
@@ -403,7 +400,6 @@ INSERT INTO authors (first_name, last_name) VALUES
 ('Kazuo', 'Ishiguro')
 ON CONFLICT (first_name, last_name) DO NOTHING;
 
--- 3. Users (keep existing)
 INSERT INTO users (username, email, password_hash, role) VALUES
 ('worker_1', 'worker1@library.com', 'pbkdf2:sha256:600000$jkl345$hashedpassword345', 'worker'),
 ('worker_2', 'worker2@library.com', 'pbkdf2:sha256:600000$mno678$hashedpassword678', 'worker'),
@@ -417,7 +413,6 @@ INSERT INTO users (username, email, password_hash, role) VALUES
 ('carlos_garcia', 'carlos@example.com', 'pbkdf2:sha256:600000$hij123$hashedpassword123', 'user'),
 ('yuki_tanaka', 'yuki@example.com', 'pbkdf2:sha256:600000$klm456$hashedpassword456', 'user');
 
--- 4. Readers (keep existing)
 INSERT INTO readers (first_name, last_name, address, email, phone_number, user_id) VALUES
 ('John', 'Doe', '123 Main St', 'john@example.com', '555-0101', (SELECT id FROM users WHERE username = 'john_doe')),
 ('Jane', 'Smith', '456 Oak Ave', 'jane@example.com', '555-0102', (SELECT id FROM users WHERE username = 'jane_smith')),
@@ -428,7 +423,6 @@ INSERT INTO readers (first_name, last_name, address, email, phone_number, user_i
 ('Carlos', 'Garcia', 'Calle Principal 123, Madrid', 'carlos@example.com', '555-0117', (SELECT id FROM users WHERE username = 'carlos_garcia')),
 ('Yuki', 'Tanaka', '1-2-3 Shibuya, Tokyo', 'yuki@example.com', '555-0118', (SELECT id FROM users WHERE username = 'yuki_tanaka'));
 
--- 5. Books (single insert, no duplicates)
 INSERT INTO books (title, author_id, isbn, publisher_id, publication_year, genre, status, description) VALUES
 ('Clean Code',
  (SELECT id FROM authors WHERE first_name = 'Robert C.' AND last_name = 'Martin'),
@@ -570,13 +564,11 @@ INSERT INTO books (title, author_id, isbn, publisher_id, publication_year, genre
  2018, 'Mythology', 'available',
  'A retelling of the goddess Circe''s story');
 
--- 6. Reader Registration Requests
 INSERT INTO reader_registration_requests (user_id, first_name, last_name, address, phone_number, status, created_at) VALUES
 ((SELECT id FROM users WHERE username = 'tech_lead'), 'Alex', 'Tech', '789 Silicon Valley', '555-0125', 'pending', CURRENT_TIMESTAMP),
 ((SELECT id FROM users WHERE username = 'developer1'), 'Sam', 'Developer', '456 Startup Ave', '555-0126', 'pending', CURRENT_TIMESTAMP - INTERVAL '1 day'),
 ((SELECT id FROM users WHERE username = 'carlos_garcia'), 'Carlos', 'Garcia', 'Calle Principal 123, Madrid', '555-0117', 'pending', CURRENT_TIMESTAMP - INTERVAL '2 days');
 
--- 7. Reservations
 INSERT INTO reservations (book_id, reader_id, start_date, end_date, status) VALUES
 (1, (SELECT id FROM readers WHERE email = 'john@example.com'), CURRENT_DATE, CURRENT_DATE + INTERVAL '14 days', 'pending'),
 (2, (SELECT id FROM readers WHERE email = 'prof.smith@university.edu'), CURRENT_DATE + INTERVAL '5 days', CURRENT_DATE + INTERVAL '19 days', 'pending'),
@@ -584,14 +576,12 @@ INSERT INTO reservations (book_id, reader_id, start_date, end_date, status) VALU
 (4, (SELECT id FROM readers WHERE email = 'carlos@example.com'), CURRENT_DATE + INTERVAL '15 days', CURRENT_DATE + INTERVAL '29 days', 'cancelled'),
 (5, (SELECT id FROM readers WHERE email = 'yuki@example.com'), CURRENT_DATE - INTERVAL '5 days', CURRENT_DATE + INTERVAL '9 days', 'pending');
 
--- 8. Loans
 INSERT INTO loans (book_id, reader_id, loan_date, return_date, status) VALUES
 (3, (SELECT id FROM readers WHERE email = 'techlead@company.com'), CURRENT_DATE - INTERVAL '30 days', NULL, 'borrowed'),
 (2, (SELECT id FROM readers WHERE email = 'prof.smith@university.edu'), CURRENT_DATE - INTERVAL '45 days', CURRENT_DATE - INTERVAL '30 days', 'returned'),
 (1, (SELECT id FROM readers WHERE email = 'john@example.com'), CURRENT_DATE - INTERVAL '20 days', NULL, 'borrowed'),
 (5, (SELECT id FROM readers WHERE email = 'yuki@example.com'), CURRENT_DATE - INTERVAL '60 days', CURRENT_DATE - INTERVAL '45 days', 'returned');
 
--- 9. Update book statuses based on loans
 UPDATE books SET status = 'borrowed' WHERE id IN (
     SELECT book_id FROM loans WHERE status = 'borrowed'
 );
